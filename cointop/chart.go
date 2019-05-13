@@ -2,11 +2,13 @@ package cointop
 
 import (
 	"fmt"
+	"image"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/gizak/termui"
+	termui "github.com/gizak/termui/v3"
+	widgets "github.com/gizak/termui/v3/widgets"
 	"github.com/miguelmota/cointop/cointop/common/color"
 	"github.com/miguelmota/cointop/cointop/common/filecache"
 	"github.com/miguelmota/cointop/cointop/common/timeutil"
@@ -40,7 +42,7 @@ func (ct *Cointop) updateChart() error {
 			var s string
 			for j := range ct.chartpoints[i] {
 				p := ct.chartpoints[i][j]
-				s = fmt.Sprintf("%s%c", s, p.Ch)
+				s = fmt.Sprintf("%s%c", s, p.Rune)
 			}
 			body = fmt.Sprintf("%s%s\n", body, s)
 
@@ -59,12 +61,6 @@ func (ct *Cointop) chartPoints(symbol string, name string) error {
 	defer chartpointslock.Unlock()
 	// TODO: not do this (SoC)
 	go ct.updateMarketbar()
-
-	chart := termui.NewLineChart()
-	chart.Height = 10
-	chart.AxesColor = termui.ColorWhite
-	chart.LineColor = termui.ColorCyan
-	chart.Border = false
 
 	rangeseconds := ct.chartrangesmap[ct.selectedchartrange]
 	if ct.selectedchartrange == "YTD" {
@@ -119,27 +115,35 @@ func (ct *Cointop) chartPoints(symbol string, name string) error {
 		}()
 	}
 
-	chart.Data = data
-	termui.Body = termui.NewGrid()
-	termui.Body.Width = maxX
-	termui.Body.AddRows(
-		termui.NewRow(
-			termui.NewCol(12, 0, chart),
-		),
-	)
+	var chartdata = make([][]float64, 2)
+	chartdata[0] = []float64{}
+	chartdata[1] = []float64{}
+	for i := range data {
+		chartdata[0] = append(chartdata[0], float64(i))
+		chartdata[1] = append(chartdata[1], data[i])
+	}
+
+	chart := widgets.NewPlot()
+	chart.Data = chartdata
+	chart.AxesColor = termui.ColorWhite
+	chart.LineColors[0] = termui.ColorCyan
+	chart.Border = false
+	chart.SetRect(0, 0, maxX, 10)
+
+	buffer := termui.NewBuffer(chart.GetRect())
+	chart.Draw(buffer)
 
 	var points [][]termui.Cell
-	// calculate layout
-	termui.Body.Align()
-	w := termui.Body.Width
-	h := 10
-	row := termui.Body.Rows[0]
-	b := row.Buffer()
-	for i := 0; i < h; i = i + 1 {
+
+	bounds := chart.GetRect().Bounds()
+	w := bounds.Max.X
+	h := bounds.Max.Y
+
+	for i := 0; i < h; i++ {
 		var rowpoints []termui.Cell
-		for j := 0; j < w; j = j + 1 {
-			p := b.At(j, i)
-			rowpoints = append(rowpoints, p)
+		for j := 0; j < w; j++ {
+			cell := buffer.GetCell(image.Point{X: j, Y: i})
+			rowpoints = append(rowpoints, cell)
 		}
 		points = append(points, rowpoints)
 	}
@@ -150,106 +154,111 @@ func (ct *Cointop) chartPoints(symbol string, name string) error {
 }
 
 func (ct *Cointop) portfolioChart() error {
-	maxX := ct.maxtablewidth - 3
-	chartpointslock.Lock()
-	defer chartpointslock.Unlock()
-	// TODO: not do this (SoC)
-	go ct.updateMarketbar()
+	/*
+		maxX := ct.maxtablewidth - 3
+		chartpointslock.Lock()
+		defer chartpointslock.Unlock()
+		// TODO: not do this (SoC)
+		go ct.updateMarketbar()
 
-	chart := termui.NewLineChart()
-	chart.Height = 10
-	chart.AxesColor = termui.ColorWhite
-	chart.LineColor = termui.ColorCyan
-	chart.Border = false
+		chart := termui.NewLineChart()
+		chart.Height = 10
+		chart.AxesColor = termui.ColorWhite
+		chart.LineColor = termui.ColorCyan
+		chart.Border = false
 
-	rangeseconds := ct.chartrangesmap[ct.selectedchartrange]
-	if ct.selectedchartrange == "YTD" {
-		ytd := time.Now().Unix() - int64(timeutil.BeginningOfYear().Unix())
-		rangeseconds = time.Duration(ytd) * time.Second
-	}
+		rangeseconds := ct.chartrangesmap[ct.selectedchartrange]
+		if ct.selectedchartrange == "YTD" {
+			ytd := time.Now().Unix() - int64(timeutil.BeginningOfYear().Unix())
+			rangeseconds = time.Duration(ytd) * time.Second
+		}
 
-	now := time.Now()
-	nowseconds := now.Unix()
-	start := nowseconds - int64(rangeseconds.Seconds())
-	end := nowseconds
+		now := time.Now()
+		nowseconds := now.Unix()
+		start := nowseconds - int64(rangeseconds.Seconds())
+		end := nowseconds
 
-	var data []float64
-	portfolio := ct.getPortfolioSlice()
-	chartname := ct.selectedCoinName()
-	for _, p := range portfolio {
-		// filter by selected chart if selected
-		if chartname != "" {
-			if chartname != p.Name {
+		var data []float64
+		portfolio := ct.getPortfolioSlice()
+		chartname := ct.selectedCoinName()
+		for _, p := range portfolio {
+			// filter by selected chart if selected
+			if chartname != "" {
+				if chartname != p.Name {
+					continue
+				}
+			}
+
+			if p.Holdings <= 0 {
 				continue
 			}
-		}
 
-		if p.Holdings <= 0 {
-			continue
-		}
+			var graphData []float64
+			cachekey := strings.ToLower(fmt.Sprintf("%s_%s", p.Symbol, strings.Replace(ct.selectedchartrange, " ", "", -1)))
+			cached, found := ct.cache.Get(cachekey)
+			if found {
+				// cache hit
+				graphData, _ = cached.([]float64)
+				ct.debuglog("soft cache hit")
+			} else {
+				filecache.Get(cachekey, &graphData)
 
-		var graphData []float64
-		cachekey := strings.ToLower(fmt.Sprintf("%s_%s", p.Symbol, strings.Replace(ct.selectedchartrange, " ", "", -1)))
-		cached, found := ct.cache.Get(cachekey)
-		if found {
-			// cache hit
-			graphData, _ = cached.([]float64)
-			ct.debuglog("soft cache hit")
-		} else {
-			filecache.Get(cachekey, &graphData)
-
-			if len(graphData) == 0 {
-				time.Sleep(2 * time.Second)
-				apiGraphData, err := ct.api.GetCoinGraphData(p.Symbol, p.Name, start, end)
-				if err != nil {
-					return err
+				if len(graphData) == 0 {
+					time.Sleep(2 * time.Second)
+					apiGraphData, err := ct.api.GetCoinGraphData(p.Symbol, p.Name, start, end)
+					if err != nil {
+						return err
+					}
+					for i := range apiGraphData.PriceUSD {
+						price := apiGraphData.PriceUSD[i][1]
+						graphData = append(graphData, price)
+					}
 				}
-				for i := range apiGraphData.PriceUSD {
-					price := apiGraphData.PriceUSD[i][1]
-					graphData = append(graphData, price)
-				}
+
+				ct.cache.Set(cachekey, graphData, 10*time.Second)
+				go func() {
+					filecache.Set(cachekey, graphData, 24*time.Hour)
+				}()
 			}
 
-			ct.cache.Set(cachekey, graphData, 10*time.Second)
-			go func() {
-				filecache.Set(cachekey, graphData, 24*time.Hour)
-			}()
-		}
-
-		for i := range graphData {
-			price := graphData[i]
-			sum := p.Holdings * price
-			if len(data)-1 >= i {
-				data[i] += sum
+			for i := range graphData {
+				price := graphData[i]
+				sum := p.Holdings * price
+				if len(data)-1 >= i {
+					data[i] += sum
+				}
+				data = append(data, sum)
 			}
-			data = append(data, sum)
 		}
-	}
 
-	chart.Data = data
-	termui.Body = termui.NewGrid()
-	termui.Body.Width = maxX
-	termui.Body.AddRows(
-		termui.NewRow(
-			termui.NewCol(12, 0, chart),
-		),
-	)
+		chart.Data = data
+		termui.Body = termui.NewGrid()
+		termui.Body.Width = maxX
+		termui.Body.AddRows(
+			termui.NewRow(
+				termui.NewCol(12, 0, chart),
+			),
+		)
+	*/
 
 	var points [][]termui.Cell
-	// calculate layout
-	termui.Body.Align()
-	w := termui.Body.Width
-	h := 10
-	row := termui.Body.Rows[0]
-	b := row.Buffer()
-	for i := 0; i < h; i = i + 1 {
-		var rowpoints []termui.Cell
-		for j := 0; j < w; j = j + 1 {
-			p := b.At(j, i)
-			rowpoints = append(rowpoints, p)
+
+	/*
+		// calculate layout
+		termui.Body.Align()
+		w := termui.Body.Width
+		h := 10
+		row := termui.Body.Rows[0]
+		b := row.Buffer()
+		for i := 0; i < h; i = i + 1 {
+			var rowpoints []termui.Cell
+			for j := 0; j < w; j = j + 1 {
+				p := b.At(j, i)
+				rowpoints = append(rowpoints, p)
+			}
+			points = append(points, rowpoints)
 		}
-		points = append(points, rowpoints)
-	}
+	*/
 
 	ct.chartpoints = points
 

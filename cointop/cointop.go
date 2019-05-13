@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gizak/termui"
+	termui "github.com/gizak/termui/v3"
 	"github.com/jroimartin/gocui"
 	"github.com/miguelmota/cointop/cointop/common/api"
 	"github.com/miguelmota/cointop/cointop/common/api/types"
@@ -253,7 +253,7 @@ func NewCointop(config *Config) *Cointop {
 	}
 
 	if ct.apiChoice == CoinGecko {
-		ct.selectedchartrange = "1Y"
+		ct.selectedchartrange = "7D"
 	}
 
 	if ct.apiChoice == CoinMarketCap {
